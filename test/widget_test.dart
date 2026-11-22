@@ -9,14 +9,15 @@ void main() {
     GoogleFonts.config.allowRuntimeFetching = false;
   });
 
-  testWidgets('MaintenanceTrackerApp renders Arabic RTL LoginScreen', (
+  testWidgets('MaintenanceTrackerApp renders Arabic RTL PIN LoginScreen', (
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(const MaintenanceTrackerApp());
     await tester.pumpAndSettle();
 
+    expect(find.text('كلمة مرور التطبيق'), findsOneWidget);
     expect(find.text('تسجيل الدخول'), findsOneWidget);
-    expect(find.text('إنشاء حساب مهندس جديد'), findsOneWidget);
+    expect(find.textContaining('Supabase'), findsNothing);
 
     final directionality = tester.widget<Directionality>(
       find.byType(Directionality).first,

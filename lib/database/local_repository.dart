@@ -15,9 +15,86 @@ class LocalRepository {
   LocalRepository({AppDatabase? database})
       : _appDatabase = database ?? AppDatabase.instance;
 
+  /// المعرف المحلي الافتراضي عند العمل بدون حساب سحابي.
+  static const String localUserId = 'local_engineer';
+
+  /// نطاق الإعدادات العامة للتطبيق داخل جدول sync_meta.
+  static const String appMetaScope = '_app_';
+  static const String appPinKey = 'app_pin';
+  static const String defaultAppPin = '1234';
+  static const String customSupabaseUrlKey = 'supabase_url';
+  static const String customSupabaseAnonKey = 'supabase_anon_key';
+
   final AppDatabase _appDatabase;
 
   Future<Database> get _db => _appDatabase.database;
+
+  // ---------------------------------------------------------------------------
+  // كلمة مرور التطبيق المحلية (PIN) وإعدادات التطبيق
+  // ---------------------------------------------------------------------------
+
+  Future<String> getAppPin() async {
+    final saved = await getMeta(appMetaScope, appPinKey);
+    final trimmed = saved?.trim() ?? '';
+    return trimmed.isEmpty ? defaultAppPin : trimmed;
+  }
+
+  Future<void> setAppPin(String pin) async {
+    await setMeta(appMetaScope, appPinKey, pin.trim());
+  }
+
+  /// نقل أي بيانات محلية مسجلة تحت [localUserId] إلى حساب المهندس السحابي عند تسجيل الدخول الاختياري.
+  Future<void> adoptLocalData(String cloudUserId) async {
+    if (cloudUserId.isEmpty || cloudUserId == localUserId) return;
+    final db = await _db;
+    await db.transaction((txn) async {
+      // نقل العملاء وسجلات الصيانة والتسويات المحلية إلى الحساب السحابي
+      for (final table in [
+        DbTables.customers,
+        DbTables.entries,
+        DbTables.settlements,
+      ]) {
+        await txn.update(
+          table,
+          {'user_id': cloudUserId, 'dirty': 1},
+          where: 'user_id = ?',
+          whereArgs: [localUserId],
+        );
+      }
+
+      // نقل إعدادات المهندس المحلية إذا كانت معدلة
+      final localSettings = await txn.query(
+        DbTables.settings,
+        where: 'user_id = ?',
+        whereArgs: [localUserId],
+        limit: 1,
+      );
+      if (localSettings.isNotEmpty) {
+        final cloudSettings = await txn.query(
+          DbTables.settings,
+          where: 'user_id = ?',
+          whereArgs: [cloudUserId],
+          limit: 1,
+        );
+        final localRow = Map<String, Object?>.from(localSettings.first);
+        final localUpdated = normalizeTimestamp(localRow['updated_at']);
+        if (cloudSettings.isEmpty || localUpdated != epochIso) {
+          localRow['user_id'] = cloudUserId;
+          localRow['dirty'] = 1;
+          await txn.insert(
+            DbTables.settings,
+            localRow,
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+        await txn.delete(
+          DbTables.settings,
+          where: 'user_id = ?',
+          whereArgs: [localUserId],
+        );
+      }
+    });
+  }
 
   // ---------------------------------------------------------------------------
   // إعدادات المهندس

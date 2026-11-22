@@ -12,23 +12,31 @@ import '../models/maintenance_entry.dart';
 import '../models/month_key.dart';
 import '../models/settlement.dart';
 import '../models/value_parsers.dart';
+import 'auth_service.dart';
 import 'excel_export_service.dart';
 import 'finance_calculator.dart';
+import 'supabase_config.dart';
 import 'sync_service.dart';
 
-/// المتحكم الرئيسي لحالة التطبيق لكل مهندس (معزول بـ user_id).
+/// المتحكم الرئيسي لحالة التطبيق (يعمل محلياً بالكامل على SQLite، مع مزامنة سحابية اختيارية).
 class AppController extends ChangeNotifier {
   AppController({
-    required this.userId,
-    required this.email,
+    String? userId,
+    String? email,
     LocalRepository? repository,
-  }) : repo = repository ?? LocalRepository() {
+    this.onLockApp,
+  })  : _userId = userId ??
+            AuthService.currentUser?.id ??
+            LocalRepository.localUserId,
+        _email = email ?? AuthService.currentUser?.email ?? '',
+        repo = repository ?? LocalRepository() {
     sync = SyncService(repo);
   }
 
-  final String userId;
-  final String email;
+  String _userId;
+  String _email;
   final LocalRepository repo;
+  final VoidCallback? onLockApp;
   late final SyncService sync;
   final ExcelExportService _excel = ExcelExportService();
 
@@ -42,13 +50,23 @@ class AppController extends ChangeNotifier {
   Settlement? _settlement;
   DateTime? _lastUpload;
 
+  String get userId => _userId;
+  String get email => _email;
+
+  /// هل المهندس مسجل دخول في الحساب السحابي الاختياري؟
+  bool get isCloudConnected =>
+      SupabaseConfig.isReady &&
+      AuthService.currentUser != null &&
+      _userId != LocalRepository.localUserId;
+
   MonthKey get month => _month;
   bool get loading => _loading;
   bool get syncing => _syncing;
   List<CustomerEntry> get entries => _entries;
-  EngineerSettings get settings => _settings ?? EngineerSettings.defaults(userId);
+  EngineerSettings get settings => _settings ?? EngineerSettings.defaults(_userId);
   Settlement? get settlement => _settlement;
-  DateTime? get lastUpload => _lastUpload;
+  DateTime? _lastUploadTime() => _lastUpload;
+  DateTime? get lastUpload => _lastUploadTime();
 
   MonthSummary get summary =>
       FinanceCalculator.summarize(_entries.map((e) => e.entry), settings);
@@ -57,7 +75,8 @@ class AppController extends ChangeNotifier {
   double get carriedInForMonth =>
       _settlement?.approved == true ? _settlement!.carriedIn : settings.carriedBalance;
 
-  SettlementBreakdown settlementBreakdown(double payment) => FinanceCalculator.settlement(
+  SettlementBreakdown settlementBreakdown(double payment) =>
+      FinanceCalculator.settlement(
         summary: summary,
         settings: settings,
         carriedIn: carriedInForMonth,
@@ -65,12 +84,36 @@ class AppController extends ChangeNotifier {
       );
 
   // ---------------------------------------------------------------------------
-  // التحميل والتنقل
+  // التحميل والتنقل وتبديل الحساب السحابي الاختياري
   // ---------------------------------------------------------------------------
 
   Future<void> init() async {
+    final cloudUser = AuthService.currentUser;
+    if (cloudUser != null) {
+      _userId = cloudUser.id;
+      _email = cloudUser.email ?? '';
+      await repo.adoptLocalData(_userId);
+    }
     await reload();
-    unawaited(_backgroundSync());
+    if (isCloudConnected) {
+      unawaited(_backgroundSync());
+    }
+  }
+
+  /// يُستدعى بعد تسجيل الدخول أو الخروج من الحساب السحابي الاختياري.
+  Future<void> refreshCloudIdentity() async {
+    final cloudUser = AuthService.currentUser;
+    if (cloudUser != null) {
+      await repo.adoptLocalData(cloudUser.id);
+      _userId = cloudUser.id;
+      _email = cloudUser.email ?? '';
+      await reload();
+      unawaited(_backgroundSync());
+    } else {
+      _userId = LocalRepository.localUserId;
+      _email = '';
+      await reload();
+    }
   }
 
   Future<void> reload() async {
@@ -78,21 +121,23 @@ class AppController extends ChangeNotifier {
     try {
       var generated = 0;
       if (_month.compareTo(MonthKey.now().next) <= 0) {
-        generated = await repo.generateMonthEntries(userId, _month);
+        generated = await repo.generateMonthEntries(_userId, _month);
       }
-      final settings = await repo.getSettings(userId);
-      final customers = await repo.getCustomers(userId, includeDeleted: true);
-      final entries = await repo.getEntriesForMonth(userId, _month.key);
-      final settlement = await repo.getSettlement(userId, _month.key);
-      final lastUpload = await repo.getMeta(userId, SyncService.metaLastUpload);
+      final settings = await repo.getSettings(_userId);
+      final customers = await repo.getCustomers(_userId, includeDeleted: true);
+      final entries = await repo.getEntriesForMonth(_userId, _month.key);
+      final settlement = await repo.getSettlement(_userId, _month.key);
+      final lastUpload = await repo.getMeta(_userId, SyncService.metaLastUpload);
       if (token != _loadToken || _disposed) return;
 
       final byId = {for (final c in customers) c.id: c};
       final joined = <CustomerEntry>[
         for (final e in entries)
-          if (byId[e.customerId] != null) CustomerEntry(customer: byId[e.customerId]!, entry: e),
+          if (byId[e.customerId] != null)
+            CustomerEntry(customer: byId[e.customerId]!, entry: e),
       ]..sort((a, b) {
-          final byAdvance = (a.entry.isAdvance ? 1 : 0).compareTo(b.entry.isAdvance ? 1 : 0);
+          final byAdvance =
+              (a.entry.isAdvance ? 1 : 0).compareTo(b.entry.isAdvance ? 1 : 0);
           if (byAdvance != 0) return byAdvance;
           return a.customer.createdAt.compareTo(b.customer.createdAt);
         });
@@ -144,7 +189,7 @@ class AppController extends ChangeNotifier {
     if (existing == null) {
       customer = Customer(
         id: newId(),
-        userId: userId,
+        userId: _userId,
         name: name,
         area: area,
         amount: amount,
@@ -157,7 +202,7 @@ class AppController extends ChangeNotifier {
       await repo.saveEntry(
         MaintenanceEntry(
           id: isAdvance ? newId() : generatedEntryId(customer.id, _month.key),
-          userId: userId,
+          userId: _userId,
           customerId: customer.id,
           accountMonth: _month.key,
           isAdvance: isAdvance,
@@ -187,25 +232,41 @@ class AppController extends ChangeNotifier {
     }
 
     if (isAdvance) {
-      // تم تحصيل صيانة الشهر القادم مقدماً، فلا داعي لسجل غير مدفوع في الشهر القادم.
-      await repo.removeUnpaidRegularEntry(userId, customer.id, _month.next.key);
+      await repo.removeUnpaidRegularEntry(_userId, customer.id, _month.next.key);
     }
     await _afterLocalChange();
   }
 
   Future<void> deleteCustomer(CustomerEntry item) async {
-    await repo.softDeleteCustomer(userId, item.customer.id, _month.key);
+    await repo.softDeleteCustomer(_userId, item.customer.id, _month.key);
     await _afterLocalChange();
   }
 
   // ---------------------------------------------------------------------------
-  // الإعدادات والتسوية
+  // الإعدادات والتسوية وكلمة مرور التطبيق
   // ---------------------------------------------------------------------------
 
   Future<void> saveSettings(EngineerSettings newSettings) async {
-    await repo.saveSettings(newSettings);
+    final normalized = EngineerSettings(
+      userId: _userId,
+      engineerName: newSettings.engineerName,
+      baseSalary: newSettings.baseSalary,
+      commissionRate: newSettings.commissionRate,
+      commissionBasis: newSettings.commissionBasis,
+      duesAssociation: newSettings.duesAssociation,
+      duesTelecom: newSettings.duesTelecom,
+      duesInsurance: newSettings.duesInsurance,
+      carriedBalance: newSettings.carriedBalance,
+      updatedAt: newSettings.updatedAt,
+    );
+    _settings = normalized;
+    await repo.saveSettings(normalized);
     await _afterLocalChange();
   }
+
+  Future<String> getAppPin() => repo.getAppPin();
+
+  Future<void> updateAppPin(String newPin) => repo.setAppPin(newPin);
 
   /// اعتماد التسوية وترحيل صافي المتبقي إلى «الباقي عليّ» للشهر القادم.
   Future<double> approveSettlement(double payment) async {
@@ -213,8 +274,8 @@ class AppController extends ChangeNotifier {
     final now = nowUtcIso();
     await repo.saveSettlement(
       Settlement(
-        id: settlementId(userId, _month.key),
-        userId: userId,
+        id: settlementId(_userId, _month.key),
+        userId: _userId,
         month: _month.key,
         totalMaintenance: breakdown.totalMaintenance,
         commission: breakdown.commission,
@@ -234,14 +295,17 @@ class AppController extends ChangeNotifier {
   }
 
   // ---------------------------------------------------------------------------
-  // المزامنة والنسخ الاحتياطي
+  // المزامنة والنسخ الاحتياطي وتصدير Excel
   // ---------------------------------------------------------------------------
 
-  /// مزامنة يدوية (سحب للتحديث). ترمي SyncException برسالة عربية عند الفشل.
   Future<void> syncNow() async {
+    if (!isCloudConnected) {
+      await reload();
+      return;
+    }
     _setSyncing(true);
     try {
-      await sync.syncNow(userId);
+      await sync.syncNow(_userId);
       await reload();
     } on SyncException {
       rethrow;
@@ -253,9 +317,14 @@ class AppController extends ChangeNotifier {
   }
 
   Future<DateTime> uploadNow() async {
+    if (!isCloudConnected) {
+      throw const SyncException(
+        'يرجى تسجيل الدخول في قسم «الحساب السحابي والمزامنة» أسفل الصفحة أولاً',
+      );
+    }
     _setSyncing(true);
     try {
-      final time = await sync.uploadAll(userId);
+      final time = await sync.uploadAll(_userId);
       _lastUpload = time;
       _notify();
       return time;
@@ -265,9 +334,14 @@ class AppController extends ChangeNotifier {
   }
 
   Future<int> restoreFromCloud() async {
+    if (!isCloudConnected) {
+      throw const SyncException(
+        'يرجى تسجيل الدخول في قسم «الحساب السحابي والمزامنة» أسفل الصفحة أولاً',
+      );
+    }
     _setSyncing(true);
     try {
-      final count = await sync.restoreAll(userId);
+      final count = await sync.restoreAll(_userId);
       await reload();
       return count;
     } finally {
@@ -276,31 +350,50 @@ class AppController extends ChangeNotifier {
   }
 
   Future<File> exportExcel() async {
-    final customers = await repo.getCustomers(userId, includeDeleted: true);
+    final currentSettings = await repo.getSettings(_userId);
+    _settings = currentSettings;
+    final customers = await repo.getCustomers(_userId, includeDeleted: true);
     final byId = {for (final c in customers) c.id: c};
-    final outstanding = await repo.getOutstandingEntries(userId, _month.key);
+    final outstanding = await repo.getOutstandingEntries(_userId, _month.key);
     final payment = _settlement?.payment ?? 0;
     return _excel.export(
       ExcelReportData(
         month: _month,
-        settings: settings,
+        settings: currentSettings,
         entries: _entries,
         outstanding: [
           for (final e in outstanding)
-            if (byId[e.customerId] != null) CustomerEntry(customer: byId[e.customerId]!, entry: e),
+            if (byId[e.customerId] != null)
+              CustomerEntry(customer: byId[e.customerId]!, entry: e),
         ],
-        summary: summary,
-        settlement: settlementBreakdown(payment),
+        summary: FinanceCalculator.summarize(
+          _entries.map((e) => e.entry),
+          currentSettings,
+        ),
+        settlement: FinanceCalculator.settlement(
+          summary: FinanceCalculator.summarize(
+            _entries.map((e) => e.entry),
+            currentSettings,
+          ),
+          settings: currentSettings,
+          carriedIn: _settlement?.approved == true
+              ? _settlement!.carriedIn
+              : currentSettings.carriedBalance,
+          payment: payment,
+        ),
         settlementApproved: _settlement?.approved ?? false,
       ),
     );
   }
 
-  /// محاولة رفع التغييرات قبل تسجيل الخروج (بدون إظهار أخطاء).
-  Future<void> trySyncBeforeLogout() async {
-    try {
-      await sync.syncNow(userId).timeout(const Duration(seconds: 8));
-    } catch (_) {}
+  Future<void> signOutCloud() async {
+    if (isCloudConnected) {
+      try {
+        await sync.syncNow(_userId).timeout(const Duration(seconds: 6));
+      } catch (_) {}
+    }
+    await AuthService.signOut();
+    await refreshCloudIdentity();
   }
 
   // ---------------------------------------------------------------------------
@@ -311,15 +404,17 @@ class AppController extends ChangeNotifier {
   }
 
   void _scheduleSync() {
-    sync.scheduleSync(userId, onDone: (changed) {
+    if (!isCloudConnected) return;
+    sync.scheduleSync(_userId, onDone: (changed) {
       if (changed && !_disposed) unawaited(reload());
     });
   }
 
   Future<void> _backgroundSync() async {
+    if (!isCloudConnected) return;
     _setSyncing(true);
     try {
-      final changed = await sync.syncNow(userId);
+      final changed = await sync.syncNow(_userId);
       if (changed) await reload();
     } catch (_) {
       // العمل بدون إنترنت: البيانات المحلية متاحة بالكامل.

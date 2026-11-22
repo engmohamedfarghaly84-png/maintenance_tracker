@@ -1,15 +1,17 @@
+import 'dart:async';
+
 import 'package:material_ui/material_ui.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../models/engineer_settings.dart';
 import '../models/enums.dart';
 import '../services/app_controller.dart';
-import '../services/auth_service.dart';
 import '../services/finance_calculator.dart';
 import '../services/sync_service.dart';
 import '../theme/app_colors.dart';
 import '../utils/formatters.dart';
 import '../widgets/common.dart';
+import 'cloud_auth_screen.dart';
 
 /// صفحة «الإعدادات والتسوية والنسخ الاحتياطي».
 class SettingsScreen extends StatefulWidget {
@@ -30,8 +32,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _insurance;
   late final TextEditingController _carried;
   late final TextEditingController _payment;
+  late final TextEditingController _newPin;
   late CommissionBasis _basis;
+  Timer? _autoSaveTimer;
   bool _busy = false;
+  bool _obscurePin = true;
 
   AppController get _c => widget.controller;
 
@@ -49,11 +54,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _payment = TextEditingController(
       text: amountToInput(_c.settlement?.payment ?? 0),
     );
+    _newPin = TextEditingController();
     _basis = s.commissionBasis;
   }
 
   @override
   void dispose() {
+    _autoSaveTimer?.cancel();
     for (final c in [
       _name,
       _salary,
@@ -63,6 +70,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _insurance,
       _carried,
       _payment,
+      _newPin,
     ]) {
       c.dispose();
     }
@@ -80,6 +88,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
         carriedBalance: parseAmount(_carried.text),
       );
 
+  /// حفظ تلقائي فوري في SQLite عند أي تعديل في اسم المهندس أو الإعدادات.
+  void _onSettingsChanged() {
+    setState(() {});
+    _autoSaveTimer?.cancel();
+    _autoSaveTimer = Timer(const Duration(milliseconds: 300), () {
+      unawaited(_c.saveSettings(_draftSettings()));
+    });
+  }
+
   void _syncFieldsFromSettings() {
     final s = _c.settings;
     _name.text = s.engineerName;
@@ -94,9 +111,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _saveSettings({bool silent = false}) async {
+    _autoSaveTimer?.cancel();
     await _c.saveSettings(_draftSettings());
     if (!silent && mounted) {
-      showAppSnack(context, 'تم حفظ إعدادات المهندس', color: AppColors.green);
+      showAppSnack(
+        context,
+        'تم حفظ إعدادات المهندس محلياً بنجاح',
+        color: AppColors.green,
+      );
+    }
+  }
+
+  Future<void> _changeAppPin() async {
+    final pin = _newPin.text.trim();
+    if (pin.isEmpty) {
+      showAppSnack(
+        context,
+        'يرجى إدخال كلمة المرور الجديدة للتطبيق',
+        color: AppColors.orange,
+      );
+      return;
+    }
+    await _c.updateAppPin(pin);
+    _newPin.clear();
+    if (mounted) {
+      FocusScope.of(context).unfocus();
+      showAppSnack(
+        context,
+        'تم تغيير كلمة مرور التطبيق بنجاح',
+        color: AppColors.green,
+      );
     }
   }
 
@@ -130,7 +174,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _openCloudAuth() async {
+    await _saveSettings(silent: true);
+    if (!mounted) return;
+    final connected = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (_) => CloudAuthScreen(controller: _c),
+      ),
+    );
+    if (connected == true && mounted) {
+      _syncFieldsFromSettings();
+      setState(() {});
+    }
+  }
+
   Future<void> _uploadCloud() async {
+    if (!_c.isCloudConnected) {
+      await _openCloudAuth();
+      if (!_c.isCloudConnected) return;
+    }
     setState(() => _busy = true);
     try {
       await _saveSettings(silent: true);
@@ -170,12 +232,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
               children: [
                 const Row(
                   children: [
-                    Icon(Icons.table_view_rounded, color: AppColors.green, size: 28),
+                    Icon(
+                      Icons.table_view_rounded,
+                      color: AppColors.green,
+                      size: 28,
+                    ),
                     SizedBox(width: 8),
                     Expanded(
                       child: Text(
                         'تم حفظ ملف Excel على الجهاز بنجاح',
-                        style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+                        style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
                     ),
                   ],
@@ -184,11 +253,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 Text(
                   file.path,
                   textDirection: TextDirection.ltr,
-                  style: const TextStyle(fontSize: 12, color: AppColors.secondary),
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.secondary,
+                  ),
                 ),
                 const SizedBox(height: 16),
                 ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.green),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.green,
+                  ),
                   onPressed: () async {
                     Navigator.of(sheetCtx).pop();
                     await SharePlus.instance.share(
@@ -213,7 +287,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
     } catch (error) {
       if (mounted) {
-        showAppSnack(context, 'تعذر تصدير ملف Excel: $error', color: AppColors.orange);
+        showAppSnack(
+          context,
+          'تعذر تصدير ملف Excel: $error',
+          color: AppColors.orange,
+        );
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -221,6 +299,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _restoreCloud() async {
+    if (!_c.isCloudConnected) {
+      await _openCloudAuth();
+      if (!_c.isCloudConnected || !mounted) return;
+    }
     final confirmed = await showConfirmDialog(
       context,
       title: 'استرجاع البيانات من السحابة',
@@ -248,19 +330,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _logout() async {
+  Future<void> _signOutCloud() async {
     final confirmed = await showConfirmDialog(
       context,
-      title: 'تسجيل الخروج',
-      message: 'هل تريد تسجيل الخروج من حساب (${_c.email})؟',
-      confirmLabel: 'تسجيل الخروج',
+      title: 'تسجيل الخروج من السحابة',
+      message:
+          'سيتم فصل الحساب السحابي (${_c.email}) مع استمرار عمل التطبيق محلياً بالكامل.',
+      confirmLabel: 'فصل الحساب السحابي',
       confirmColor: AppColors.orange,
     );
     if (!confirmed || !mounted) return;
     setState(() => _busy = true);
-    await _c.trySyncBeforeLogout();
-    await AuthService.signOut();
-    if (mounted) Navigator.of(context).popUntil((r) => r.isFirst);
+    try {
+      await _c.signOutCloud();
+      _syncFieldsFromSettings();
+      if (mounted) {
+        showAppSnack(
+          context,
+          'تم تسجيل الخروج من الحساب السحابي',
+          color: AppColors.green,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _lockApp() async {
+    await _saveSettings(silent: true);
+    if (!mounted) return;
+    Navigator.of(context).popUntil((r) => r.isFirst);
+    _c.onLockApp?.call();
   }
 
   @override
@@ -287,11 +387,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           appBar: AppBar(
             title: const Text('الإعدادات والتسوية والنسخ الاحتياطي'),
             actions: [
-              IconButton(
-                tooltip: 'تسجيل الخروج',
-                icon: const Icon(Icons.logout_rounded),
-                onPressed: _busy ? null : _logout,
-              ),
+              if (_c.onLockApp != null)
+                IconButton(
+                  tooltip: 'قفل التطبيق',
+                  icon: const Icon(Icons.lock_outline_rounded),
+                  onPressed: _busy ? null : _lockApp,
+                ),
             ],
           ),
           body: ListView(
@@ -302,6 +403,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _buildSettlementSection(breakdown),
               const SizedBox(height: 14),
               _buildBackupSection(),
+              const SizedBox(height: 14),
+              _buildAppPinSection(),
+              const SizedBox(height: 14),
+              _buildOptionalCloudAccountSection(),
               const SizedBox(height: 24),
             ],
           ),
@@ -311,7 +416,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   // ---------------------------------------------------------------------------
-  // 1. إعدادات المهندس
+  // 1. إعدادات المهندس (تُحفظ محلياً في SQLite فوراً)
   // ---------------------------------------------------------------------------
   Widget _buildEngineerSection() {
     return SectionCard(
@@ -322,7 +427,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         children: [
           TextFormField(
             controller: _name,
-            onChanged: (_) => setState(() {}),
+            onChanged: (_) => _onSettingsChanged(),
             decoration: const InputDecoration(
               labelText: 'اسم المهندس',
               prefixIcon: Icon(Icons.badge_outlined),
@@ -335,7 +440,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: NumberField(
                   controller: _salary,
                   label: 'الراتب الأساسي',
-                  onChanged: (_) => setState(() {}),
+                  onChanged: (_) => _onSettingsChanged(),
                 ),
               ),
               const SizedBox(width: 10),
@@ -344,7 +449,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   controller: _rate,
                   label: 'نسبة العمولة',
                   suffix: '%',
-                  onChanged: (_) => setState(() {}),
+                  onChanged: (_) => _onSettingsChanged(),
                 ),
               ),
             ],
@@ -364,7 +469,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ],
             selected: {_basis},
-            onSelectionChanged: (s) => setState(() => _basis = s.first),
+            onSelectionChanged: (s) {
+              _basis = s.first;
+              _onSettingsChanged();
+            },
           ),
           const SizedBox(height: 14),
           const FieldLabel('المستحقات الثابتة'),
@@ -374,7 +482,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: NumberField(
                   controller: _assoc,
                   label: 'جمعية',
-                  onChanged: (_) => setState(() {}),
+                  onChanged: (_) => _onSettingsChanged(),
                 ),
               ),
               const SizedBox(width: 8),
@@ -382,7 +490,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: NumberField(
                   controller: _telecom,
                   label: 'اتصالات',
-                  onChanged: (_) => setState(() {}),
+                  onChanged: (_) => _onSettingsChanged(),
                 ),
               ),
               const SizedBox(width: 8),
@@ -390,7 +498,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: NumberField(
                   controller: _insurance,
                   label: 'تأمين',
-                  onChanged: (_) => setState(() {}),
+                  onChanged: (_) => _onSettingsChanged(),
                 ),
               ),
             ],
@@ -400,7 +508,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             controller: _carried,
             label: 'الباقي عليّ (الرصيد المرحل من الشهور السابقة)',
             icon: Icons.history_rounded,
-            onChanged: (_) => setState(() {}),
+            onChanged: (_) => _onSettingsChanged(),
           ),
           const SizedBox(height: 14),
           ElevatedButton.icon(
@@ -446,7 +554,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             child: Row(
               children: [
-                const Icon(Icons.account_balance_wallet_rounded, color: Colors.white),
+                const Icon(
+                  Icons.account_balance_wallet_rounded,
+                  color: Colors.white,
+                ),
                 const SizedBox(width: 10),
                 const Expanded(
                   child: Column(
@@ -484,12 +595,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
               children: [
                 Icon(Icons.verified_rounded, color: AppColors.green, size: 18),
                 SizedBox(width: 6),
-                Text(
-                  'تم اعتماد تسوية هذا الشهر وترحيلها (يمكنك إعادة الاعتماد بعد التعديل)',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: AppColors.green,
-                    fontWeight: FontWeight.w700,
+                Expanded(
+                  child: Text(
+                    'تم اعتماد تسوية هذا الشهر وترحيلها (يمكنك إعادة الاعتماد بعد التعديل)',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: AppColors.green,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
               ],
@@ -510,7 +623,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _calcRow(String label, double value, {required String sign, Color? color}) {
+  Widget _calcRow(
+    String label,
+    double value, {
+    required String sign,
+    Color? color,
+  }) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
@@ -525,12 +643,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             child: Text(
               sign,
-              style: const TextStyle(fontWeight: FontWeight.w800, color: AppColors.primary),
+              style: const TextStyle(
+                fontWeight: FontWeight.w800,
+                color: AppColors.primary,
+              ),
             ),
           ),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(label, style: const TextStyle(color: AppColors.secondary)),
+            child: Text(
+              label,
+              style: const TextStyle(color: AppColors.secondary),
+            ),
           ),
           Text(
             formatMoney(value),
@@ -564,12 +688,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             child: Row(
               children: [
-                const Icon(Icons.schedule_rounded, size: 18, color: AppColors.secondary),
+                const Icon(
+                  Icons.schedule_rounded,
+                  size: 18,
+                  color: AppColors.secondary,
+                ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     lastUpload == null
-                        ? 'آخر رفع ناجح: لم يتم الرفع اليدوي بعد'
+                        ? 'آخر رفع ناجح: لم يتم الرفع السحابي بعد'
                         : 'آخر رفع ناجح: ${formatDateTime(lastUpload)}',
                     style: const TextStyle(
                       fontSize: 12.5,
@@ -600,6 +728,107 @@ class _SettingsScreenState extends State<SettingsScreen> {
             icon: const Icon(Icons.cloud_download_rounded),
             label: const Text('استرجاع البيانات من السحابة'),
           ),
+        ],
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // 4. تغيير كلمة مرور التطبيق (PIN) محلياً
+  // ---------------------------------------------------------------------------
+  Widget _buildAppPinSection() {
+    return SectionCard(
+      title: 'كلمة مرور التطبيق (PIN)',
+      icon: Icons.pin_outlined,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextFormField(
+            controller: _newPin,
+            obscureText: _obscurePin,
+            keyboardType: TextInputType.visiblePassword,
+            decoration: InputDecoration(
+              labelText: 'كلمة المرور الجديدة للتطبيق',
+              hintText: 'الافتراضية: 1234',
+              prefixIcon: const Icon(Icons.lock_reset_rounded),
+              suffixIcon: IconButton(
+                icon: Icon(
+                  _obscurePin ? Icons.visibility_off : Icons.visibility,
+                ),
+                onPressed: () => setState(() => _obscurePin = !_obscurePin),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: _busy ? null : _changeAppPin,
+            icon: const Icon(Icons.check_rounded),
+            label: const Text('تحديث كلمة مرور التطبيق'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // 5. الحساب السحابي والمزامنة (اختياري)
+  // ---------------------------------------------------------------------------
+  Widget _buildOptionalCloudAccountSection() {
+    final connected = _c.isCloudConnected;
+    return SectionCard(
+      title: 'الحساب السحابي والمزامنة (اختياري)',
+      icon: Icons.cloud_outlined,
+      iconColor: AppColors.secondary,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              borderRadius: BorderRadius.circular(AppColors.radius),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  connected
+                      ? Icons.cloud_done_rounded
+                      : Icons.offline_pin_rounded,
+                  color: connected ? AppColors.green : AppColors.secondary,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    connected
+                        ? 'متصل بالحساب السحابي:\n${_c.email}'
+                        : 'التطبيق يعمل محلياً بالكامل على جهازك بدون الحاجة لحساب سحابي. يمكنك تسجيل الدخول السحابي اختيارياً إذا رغبت في تفعيل الرفع والاسترجاع السحابي.',
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      color: AppColors.secondary,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          if (!connected)
+            OutlinedButton.icon(
+              onPressed: _busy ? null : _openCloudAuth,
+              icon: const Icon(Icons.cloud_sync_rounded),
+              label: const Text('تسجيل الدخول / إنشاء حساب سحابي (Supabase)'),
+            )
+          else
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.orange,
+                side: const BorderSide(color: AppColors.orange),
+              ),
+              onPressed: _busy ? null : _signOutCloud,
+              icon: const Icon(Icons.logout_rounded),
+              label: const Text('تسجيل الخروج من الحساب السحابي'),
+            ),
         ],
       ),
     );

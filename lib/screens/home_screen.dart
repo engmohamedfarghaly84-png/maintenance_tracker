@@ -47,10 +47,17 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Future<void> _manualSync() async {
+  Future<void> _manualRefreshOrSync() async {
     try {
       await _c.syncNow();
-      if (mounted) showAppSnack(context, 'تمت المزامنة مع السحابة بنجاح', color: AppColors.green);
+      if (!mounted) return;
+      showAppSnack(
+        context,
+        _c.isCloudConnected
+            ? 'تمت المزامنة مع السحابة بنجاح'
+            : 'تم تحديث البيانات المحلية بنجاح',
+        color: AppColors.green,
+      );
     } on SyncException catch (e) {
       if (mounted) showAppSnack(context, e.message, color: AppColors.orange);
     }
@@ -76,20 +83,24 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
             actions: [
-              _c.syncing
-                  ? const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 14),
-                      child: SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+              if (_c.isCloudConnected)
+                _c.syncing
+                    ? const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 14),
+                        child: SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        ),
+                      )
+                    : IconButton(
+                        tooltip: 'مزامنة مع السحابة',
+                        icon: const Icon(Icons.cloud_sync_rounded),
+                        onPressed: _manualRefreshOrSync,
                       ),
-                    )
-                  : IconButton(
-                      tooltip: 'مزامنة الآن',
-                      icon: const Icon(Icons.cloud_sync_rounded),
-                      onPressed: _manualSync,
-                    ),
               IconButton(
                 tooltip: 'الإعدادات والتسوية والنسخ الاحتياطي',
                 icon: const Icon(Icons.settings_rounded),
@@ -160,7 +171,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     final entries = _c.entries;
     return RefreshIndicator(
-      onRefresh: _manualSync,
+      onRefresh: _manualRefreshOrSync,
       child: Scrollbar(
         controller: _scrollController,
         thumbVisibility: true,
@@ -173,7 +184,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 physics: const AlwaysScrollableScrollPhysics(),
                 children: const [
                   SizedBox(height: 60),
-                  Icon(Icons.people_outline_rounded, size: 64, color: AppColors.secondary),
+                  Icon(
+                    Icons.people_outline_rounded,
+                    size: 64,
+                    color: AppColors.secondary,
+                  ),
                   SizedBox(height: 12),
                   Text(
                     'لا يوجد عملاء في هذا الشهر بعد\nاضغط زر (+) لإضافة عميل جديد',
