@@ -195,6 +195,8 @@ class SyncService {
         result[key] = normalizeTimestamp(value);
       } else if (key == 'approved_at') {
         result[key] = normalizeNullableTimestamp(value);
+      } else if (key == 'client_number') {
+        result[key] = parseInt(value, fallback: 1);
       } else if (value is num) {
         result[key] = value.toDouble();
       } else {

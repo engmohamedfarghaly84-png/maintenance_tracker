@@ -8,6 +8,12 @@ double parseDouble(Object? value) {
   return double.tryParse('${value ?? ''}') ?? 0;
 }
 
+int parseInt(Object? value, {int fallback = 0}) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  return int.tryParse('${value ?? ''}') ?? fallback;
+}
+
 bool parseBool(Object? value) =>
     value == true || value == 1 || value == '1' || value == 'true';
 

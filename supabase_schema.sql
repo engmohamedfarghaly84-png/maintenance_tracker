@@ -6,6 +6,7 @@
 create table if not exists public.customers (
   id text primary key,
   user_id uuid not null references auth.users(id) on delete cascade,
+  client_number integer not null default 1,
   name text not null,
   area text not null default '',
   amount double precision not null default 0,
@@ -15,6 +16,8 @@ create table if not exists public.customers (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.customers add column if not exists client_number integer not null default 1;
 
 create table if not exists public.maintenance_entries (
   id text primary key,

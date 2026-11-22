@@ -10,8 +10,10 @@ import '../models/enums.dart';
 import '../models/ids.dart';
 import '../models/maintenance_entry.dart';
 import '../models/month_key.dart';
+import '../models/saved_area.dart';
 import '../models/settlement.dart';
 import '../models/value_parsers.dart';
+import '../utils/arabic_utils.dart';
 import 'auth_service.dart';
 import 'excel_export_service.dart';
 import 'finance_calculator.dart';
@@ -46,6 +48,7 @@ class AppController extends ChangeNotifier {
   bool _disposed = false;
   int _loadToken = 0;
   List<CustomerEntry> _entries = const [];
+  List<SavedArea> _savedAreas = const [];
   EngineerSettings? _settings;
   Settlement? _settlement;
   DateTime? _lastUpload;
@@ -63,17 +66,26 @@ class AppController extends ChangeNotifier {
   bool get loading => _loading;
   bool get syncing => _syncing;
   List<CustomerEntry> get entries => _entries;
-  EngineerSettings get settings => _settings ?? EngineerSettings.defaults(_userId);
+  List<SavedArea> get savedAreas => _savedAreas;
+  EngineerSettings get settings =>
+      _settings ?? EngineerSettings.defaults(_userId);
   Settlement? get settlement => _settlement;
-  DateTime? _lastUploadTime() => _lastUpload;
-  DateTime? get lastUpload => _lastUploadTime();
+  DateTime? get lastUpload => _lastUpload;
 
   MonthSummary get summary =>
       FinanceCalculator.summarize(_entries.map((e) => e.entry), settings);
 
   /// الباقي عليّ المستخدم في تسوية الشهر المعروض.
-  double get carriedInForMonth =>
-      _settlement?.approved == true ? _settlement!.carriedIn : settings.carriedBalance;
+  double get carriedInForMonth => _settlement?.approved == true
+      ? _settlement!.carriedIn
+      : settings.carriedBalance;
+
+  /// مبلغ السداد المحفوظ للشهر الحالي.
+  double get currentMonthPayment => _settlement?.payment ?? 0;
+
+  /// صافي التسوية النهائي للشهر الحالي (نفس الرقم المعروض في صفحة الإعدادات والتسوية).
+  double get currentNetSettlement =>
+      settlementBreakdown(currentMonthPayment).net;
 
   SettlementBreakdown settlementBreakdown(double payment) =>
       FinanceCalculator.settlement(
@@ -82,6 +94,33 @@ class AppController extends ChangeNotifier {
         carriedIn: carriedInForMonth,
         payment: payment,
       );
+
+  /// حساب عدد العملاء في كل منطقة للشهر الحالي.
+  Map<String, int> get areaCustomerCounts {
+    final counts = <String, int>{};
+    for (final area in _savedAreas) {
+      counts[area.name] = 0;
+    }
+    for (final item in _entries) {
+      final areaName = item.customer.area.trim();
+      if (areaName.isNotEmpty) {
+        counts[areaName] = (counts[areaName] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }
+
+  /// قائمة أسماء المناطق المحفوظة والمستخدمة مرتبة أبجدياً.
+  List<String> get sortedAreaNames {
+    final names = <String>{
+      for (final a in _savedAreas)
+        if (a.name.trim().isNotEmpty) a.name.trim(),
+      for (final e in _entries)
+        if (e.customer.area.trim().isNotEmpty) e.customer.area.trim(),
+    }.toList()
+      ..sort(ArabicUtils.compareNormalized);
+    return names;
+  }
 
   // ---------------------------------------------------------------------------
   // التحميل والتنقل وتبديل الحساب السحابي الاختياري
@@ -100,7 +139,6 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  /// يُستدعى بعد تسجيل الدخول أو الخروج من الحساب السحابي الاختياري.
   Future<void> refreshCloudIdentity() async {
     final cloudUser = AuthService.currentUser;
     if (cloudUser != null) {
@@ -127,7 +165,9 @@ class AppController extends ChangeNotifier {
       final customers = await repo.getCustomers(_userId, includeDeleted: true);
       final entries = await repo.getEntriesForMonth(_userId, _month.key);
       final settlement = await repo.getSettlement(_userId, _month.key);
-      final lastUpload = await repo.getMeta(_userId, SyncService.metaLastUpload);
+      final savedAreas = await repo.getSavedAreas(_userId);
+      final lastUpload =
+          await repo.getMeta(_userId, SyncService.metaLastUpload);
       if (token != _loadToken || _disposed) return;
 
       final byId = {for (final c in customers) c.id: c};
@@ -136,14 +176,18 @@ class AppController extends ChangeNotifier {
           if (byId[e.customerId] != null)
             CustomerEntry(customer: byId[e.customerId]!, entry: e),
       ]..sort((a, b) {
-          final byAdvance =
-              (a.entry.isAdvance ? 1 : 0).compareTo(b.entry.isAdvance ? 1 : 0);
-          if (byAdvance != 0) return byAdvance;
+          final areaCmp =
+              ArabicUtils.compareNormalized(a.customer.area, b.customer.area);
+          if (areaCmp != 0) return areaCmp;
+          final numCmp =
+              a.customer.clientNumber.compareTo(b.customer.clientNumber);
+          if (numCmp != 0) return numCmp;
           return a.customer.createdAt.compareTo(b.customer.createdAt);
         });
 
       _settings = settings;
       _entries = joined;
+      _savedAreas = savedAreas;
       _settlement = settlement;
       _lastUpload = lastUpload == null ? null : DateTime.tryParse(lastUpload);
       _loading = false;
@@ -172,11 +216,14 @@ class AppController extends ChangeNotifier {
   }
 
   // ---------------------------------------------------------------------------
-  // العملاء وسجلات الصيانة
+  // العملاء وسجلات الصيانة والتحصيل السريع والمناطق
   // ---------------------------------------------------------------------------
+
+  Future<int> getNextClientNumber() => repo.getNextClientNumber(_userId);
 
   Future<void> saveCustomerEntry({
     CustomerEntry? existing,
+    required int clientNumber,
     required String name,
     required String area,
     required double amount,
@@ -190,6 +237,7 @@ class AppController extends ChangeNotifier {
       customer = Customer(
         id: newId(),
         userId: _userId,
+        clientNumber: clientNumber,
         name: name,
         area: area,
         amount: amount,
@@ -215,6 +263,7 @@ class AppController extends ChangeNotifier {
       );
     } else {
       customer = existing.customer.copyWith(
+        clientNumber: clientNumber,
         name: name,
         area: area,
         amount: amount,
@@ -237,13 +286,46 @@ class AppController extends ChangeNotifier {
     await _afterLocalChange();
   }
 
+  /// تحصيل سريع بضغطة واحدة (كاش / محفظة) من بطاقة العميل في الشاشة الرئيسية.
+  /// إذا كان العميل مدفوعاً بالفعل بنفس الطريقة، يعيده إلى «لم يدفع» لسهولة التراجع.
+  Future<void> quickCollect(CustomerEntry item, PaymentMethod method) async {
+    final isAlreadyPaidSameMethod =
+        item.entry.status == PaymentStatus.paid &&
+        item.entry.paymentMethod == method;
+    final newStatus =
+        isAlreadyPaidSameMethod ? PaymentStatus.unpaid : PaymentStatus.paid;
+
+    await repo.saveEntry(
+      item.entry.copyWith(
+        status: newStatus,
+        paymentMethod: method,
+      ),
+    );
+    await repo.saveCustomer(
+      item.customer.copyWith(paymentMethod: method),
+    );
+    await _afterLocalChange();
+  }
+
   Future<void> deleteCustomer(CustomerEntry item) async {
     await repo.softDeleteCustomer(_userId, item.customer.id, _month.key);
     await _afterLocalChange();
   }
 
+  /// إضافة منطقة جديدة في قاعدة بيانات المناطق المحفوظة.
+  Future<void> addSavedArea(String name) async {
+    await repo.addSavedArea(_userId, name);
+    await reload();
+  }
+
+  /// حذف منطقة محفوظة من قاعدة البيانات.
+  Future<void> deleteSavedArea(String areaId) async {
+    await repo.deleteSavedArea(_userId, areaId);
+    await reload();
+  }
+
   // ---------------------------------------------------------------------------
-  // الإعدادات والتسوية وكلمة مرور التطبيق
+  // الإعدادات والتسوية وتصفير بداية الشهر وكلمة مرور التطبيق
   // ---------------------------------------------------------------------------
 
   Future<void> saveSettings(EngineerSettings newSettings) async {
@@ -261,6 +343,37 @@ class AppController extends ChangeNotifier {
     );
     _settings = normalized;
     await repo.saveSettings(normalized);
+    await _afterLocalChange();
+  }
+
+  /// حفظ مبلغ السداد الشهري فوراً ليتطابق صافي التسوية في الشريط السفلي للشاشة الرئيسية.
+  Future<void> updateMonthlyPayment(double payment) async {
+    final breakdown = settlementBreakdown(payment);
+    final now = nowUtcIso();
+    final updated = Settlement(
+      id: settlementId(_userId, _month.key),
+      userId: _userId,
+      month: _month.key,
+      totalMaintenance: breakdown.totalMaintenance,
+      commission: breakdown.commission,
+      walletTransfers: breakdown.walletTransfers,
+      salaryAndDues: breakdown.salaryAndDues,
+      carriedIn: breakdown.carriedIn,
+      payment: breakdown.payment,
+      netRemaining: breakdown.net,
+      approved: _settlement?.approved ?? false,
+      approvedAt: _settlement?.approvedAt,
+      updatedAt: now,
+    );
+    _settlement = updated;
+    await repo.saveSettlement(updated);
+    _notify();
+    _scheduleSync();
+  }
+
+  /// تصفير حسابات العملاء (بداية شهر جديد).
+  Future<void> resetMonthAccounts() async {
+    await repo.resetMonthAccounts(_userId, _month.key);
     await _afterLocalChange();
   }
 
@@ -354,8 +467,13 @@ class AppController extends ChangeNotifier {
     _settings = currentSettings;
     final customers = await repo.getCustomers(_userId, includeDeleted: true);
     final byId = {for (final c in customers) c.id: c};
-    final outstanding = await repo.getOutstandingEntries(_userId, _month.key);
+    final outstanding =
+        await repo.getOutstandingEntries(_userId, _month.key);
     final payment = _settlement?.payment ?? 0;
+    final currentSummary = FinanceCalculator.summarize(
+      _entries.map((e) => e.entry),
+      currentSettings,
+    );
     return _excel.export(
       ExcelReportData(
         month: _month,
@@ -366,15 +484,9 @@ class AppController extends ChangeNotifier {
             if (byId[e.customerId] != null)
               CustomerEntry(customer: byId[e.customerId]!, entry: e),
         ],
-        summary: FinanceCalculator.summarize(
-          _entries.map((e) => e.entry),
-          currentSettings,
-        ),
+        summary: currentSummary,
         settlement: FinanceCalculator.settlement(
-          summary: FinanceCalculator.summarize(
-            _entries.map((e) => e.entry),
-            currentSettings,
-          ),
+          summary: currentSummary,
           settings: currentSettings,
           carriedIn: _settlement?.approved == true
               ? _settlement!.carriedIn

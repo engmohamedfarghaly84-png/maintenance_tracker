@@ -6,8 +6,10 @@ import '../models/enums.dart';
 import '../models/ids.dart';
 import '../models/maintenance_entry.dart';
 import '../models/month_key.dart';
+import '../models/saved_area.dart';
 import '../models/settlement.dart';
 import '../models/value_parsers.dart';
+import '../utils/arabic_utils.dart';
 import 'app_database.dart';
 
 /// طبقة الوصول للبيانات المحلية. كل الاستعلامات معزولة بـ user_id.
@@ -48,7 +50,6 @@ class LocalRepository {
     if (cloudUserId.isEmpty || cloudUserId == localUserId) return;
     final db = await _db;
     await db.transaction((txn) async {
-      // نقل العملاء وسجلات الصيانة والتسويات المحلية إلى الحساب السحابي
       for (final table in [
         DbTables.customers,
         DbTables.entries,
@@ -62,7 +63,13 @@ class LocalRepository {
         );
       }
 
-      // نقل إعدادات المهندس المحلية إذا كانت معدلة
+      await txn.update(
+        DbTables.areas,
+        {'user_id': cloudUserId},
+        where: 'user_id = ?',
+        whereArgs: [localUserId],
+      );
+
       final localSettings = await txn.query(
         DbTables.settings,
         where: 'user_id = ?',
@@ -110,7 +117,6 @@ class LocalRepository {
     );
     if (rows.isNotEmpty) return EngineerSettings.fromDb(rows.first);
 
-    // إعدادات افتراضية بتاريخ قديم حتى لا تطغى على بيانات السحابة عند الاسترجاع.
     final defaults = EngineerSettings.defaults(userId);
     await db.insert(
       DbTables.settings,
@@ -130,6 +136,89 @@ class LocalRepository {
   }
 
   // ---------------------------------------------------------------------------
+  // المناطق المحفوظة (Saved Areas)
+  // ---------------------------------------------------------------------------
+
+  /// جلب المناطق المحفوظة مرتبة أبجدياً (مع دمج أي منطقة موجودة لدى العملاء تلقائياً).
+  Future<List<SavedArea>> getSavedAreas(String userId) async {
+    final db = await _db;
+    final rows = await db.query(
+      DbTables.areas,
+      where: 'user_id = ?',
+      whereArgs: [userId],
+    );
+    final areas = rows.map(SavedArea.fromDb).toList();
+    final existingNames = areas.map((a) => a.name.trim()).toSet();
+
+    // استخراج المناطق الموجودة لدى العملاء غير المحذوفين وإضافتها إن لم تكن محفوظة
+    final customerRows = await db.query(
+      DbTables.customers,
+      columns: ['area'],
+      where: 'user_id = ? AND is_deleted = 0',
+      whereArgs: [userId],
+    );
+    final now = nowUtcIso();
+    for (final cRow in customerRows) {
+      final areaName = ((cRow['area'] as String?) ?? '').trim();
+      if (areaName.isNotEmpty && !existingNames.contains(areaName)) {
+        existingNames.add(areaName);
+        final newArea = SavedArea(
+          id: newId(),
+          userId: userId,
+          name: areaName,
+          createdAt: now,
+        );
+        await db.insert(
+          DbTables.areas,
+          newArea.toDb(),
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+        areas.add(newArea);
+      }
+    }
+
+    areas.sort((a, b) => ArabicUtils.compareNormalized(a.name, b.name));
+    return areas;
+  }
+
+  /// إضافة منطقة جديدة إلى جدول المناطق المحفوظة (إذا لم تكن موجودة).
+  Future<SavedArea?> addSavedArea(String userId, String rawName) async {
+    final name = rawName.trim();
+    if (name.isEmpty) return null;
+    final db = await _db;
+    final existing = await db.query(
+      DbTables.areas,
+      where: 'user_id = ? AND name = ?',
+      whereArgs: [userId, name],
+      limit: 1,
+    );
+    if (existing.isNotEmpty) return SavedArea.fromDb(existing.first);
+
+    final area = SavedArea(
+      id: newId(),
+      userId: userId,
+      name: name,
+      createdAt: nowUtcIso(),
+    );
+    await db.insert(
+      DbTables.areas,
+      area.toDb(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    return area;
+  }
+
+  /// حذف منطقة محفوظة من جدول المناطق.
+  Future<void> deleteSavedArea(String userId, String areaId) async {
+    final db = await _db;
+    await db.delete(
+      DbTables.areas,
+      where: 'id = ? AND user_id = ?',
+      whereArgs: [areaId, userId],
+    );
+  }
+
+  // ---------------------------------------------------------------------------
   // العملاء
   // ---------------------------------------------------------------------------
 
@@ -142,9 +231,21 @@ class LocalRepository {
       DbTables.customers,
       where: includeDeleted ? 'user_id = ?' : 'user_id = ? AND is_deleted = 0',
       whereArgs: [userId],
-      orderBy: 'created_at ASC',
+      orderBy: 'client_number ASC, created_at ASC',
     );
     return rows.map(Customer.fromDb).toList();
+  }
+
+  /// الرقم الأصلي (التسلسلي) التالي المقترح لعميل جديد.
+  Future<int> getNextClientNumber(String userId) async {
+    final db = await _db;
+    final rows = await db.rawQuery(
+      'SELECT MAX(client_number) AS max_num FROM ${DbTables.customers} '
+      'WHERE user_id = ? AND is_deleted = 0',
+      [userId],
+    );
+    final maxNum = rows.isEmpty ? 0 : parseInt(rows.first['max_num']);
+    return maxNum + 1;
   }
 
   Future<void> saveCustomer(Customer customer) async {
@@ -154,6 +255,9 @@ class LocalRepository {
       {...customer.copyWith(updatedAt: nowUtcIso()).toDb(), 'dirty': 1},
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+    if (customer.area.trim().isNotEmpty) {
+      await addSavedArea(customer.userId, customer.area);
+    }
   }
 
   /// حذف ناعم للعميل وسجلاته من الشهر المحدد وما بعده (مع الإبقاء على السجل التاريخي).
@@ -182,7 +286,7 @@ class LocalRepository {
   }
 
   // ---------------------------------------------------------------------------
-  // سجلات الصيانة
+  // سجلات الصيانة وتصفير بداية الشهر
   // ---------------------------------------------------------------------------
 
   Future<List<MaintenanceEntry>> getEntriesForMonth(
@@ -224,6 +328,40 @@ class LocalRepository {
     );
   }
 
+  /// تصفير حسابات العملاء لبداية شهر جديد:
+  /// تحويل حالة الدفع لجميع العملاء في الشهر المحدد إلى «لم يدفع» وتصفير مبلغ السداد النقدي للشهر،
+  /// مع الإبقاء على أسماء العملاء وأرقامهم الأصلية ومناطقهم وقيم صيانتهم كما هي.
+  Future<void> resetMonthAccounts(String userId, String monthKey) async {
+    final db = await _db;
+    final now = nowUtcIso();
+    await db.transaction((txn) async {
+      await txn.update(
+        DbTables.entries,
+        {
+          'status': PaymentStatus.unpaid.code,
+          'is_advance': 0,
+          'updated_at': now,
+          'dirty': 1,
+        },
+        where: 'user_id = ? AND account_month = ? AND is_deleted = 0',
+        whereArgs: [userId, monthKey],
+      );
+
+      await txn.update(
+        DbTables.settlements,
+        {
+          'payment': 0,
+          'approved': 0,
+          'approved_at': null,
+          'updated_at': now,
+          'dirty': 1,
+        },
+        where: 'user_id = ? AND month = ?',
+        whereArgs: [userId, monthKey],
+      );
+    });
+  }
+
   /// عند التحصيل المقدم: إلغاء سجل الشهر القادم غير المدفوع لنفس العميل (إن وُجد).
   Future<void> removeUnpaidRegularEntry(
     String userId,
@@ -241,8 +379,6 @@ class LocalRepository {
   }
 
   /// توليد سجلات الشهر تلقائياً لقائمة العملاء الثابتة (بحالة «لم يدفع»).
-  /// يتم تخطي العميل الذي سدد هذا الشهر مقدماً في الشهر السابق.
-  /// يعيد عدد السجلات الجديدة.
   Future<int> generateMonthEntries(String userId, MonthKey month) async {
     final db = await _db;
     final customers = await getCustomers(userId);
@@ -257,7 +393,10 @@ class LocalRepository {
 
     final existingIds = existing.map((r) => r['id'] as String).toSet();
     final customersWithEntry = existing
-        .where((r) => r['account_month'] == month.key && !parseBool(r['is_deleted']))
+        .where(
+          (r) =>
+              r['account_month'] == month.key && !parseBool(r['is_deleted']),
+        )
         .map((r) => r['customer_id'] as String)
         .toSet();
     final prepaidCustomers = existing
@@ -367,7 +506,6 @@ class LocalRepository {
     );
   }
 
-  /// تعليم الصفوف كمرفوعة (فقط إذا لم تتغير منذ الرفع).
   Future<void> markClean(String table, List<Map<String, Object?>> rows) async {
     if (rows.isEmpty) return;
     final db = await _db;
@@ -384,7 +522,6 @@ class LocalRepository {
     await batch.commit(noResult: true);
   }
 
-  /// دمج صف قادم من السحابة (الأحدث يفوز). يعيد true إذا تم تطبيق التغيير.
   Future<bool> mergeRemoteRow(String table, Map<String, Object?> row) async {
     final db = await _db;
     final pk = DbTables.primaryKey(table);
@@ -397,9 +534,10 @@ class LocalRepository {
     );
 
     if (local.isNotEmpty) {
-      final localUpdated = DateTime.parse(normalizeTimestamp(local.first['updated_at']));
-      final remoteUpdated = DateTime.parse(normalizeTimestamp(row['updated_at']));
-      // آخر تعديل يفوز: لا نستبدل نسخة محلية أحدث (أو مساوية) للنسخة السحابية.
+      final localUpdated =
+          DateTime.parse(normalizeTimestamp(local.first['updated_at']));
+      final remoteUpdated =
+          DateTime.parse(normalizeTimestamp(row['updated_at']));
       if (!remoteUpdated.isAfter(localUpdated)) return false;
     }
 
@@ -411,7 +549,6 @@ class LocalRepository {
     return true;
   }
 
-  /// استبدال كافة بيانات المهندس المحلية ببيانات السحابة.
   Future<void> replaceAllForUser(
     String userId,
     Map<String, List<Map<String, Object?>>> data,

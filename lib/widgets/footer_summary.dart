@@ -4,18 +4,32 @@ import '../services/finance_calculator.dart';
 import '../theme/app_colors.dart';
 import '../utils/formatters.dart';
 
-/// الملخص السفلي الثابت للشاشة الرئيسية.
+/// الملخص السفلي الثابت للشاشة الرئيسية:
+/// 1. إجمالي الصيانة المدفوع (المحصّل)
+/// 2. المتبقي غير المدفوع (غير المحصّل)
+/// 3. إجمالي الصيانات (المحصّل + غير المحصّل) بخط عريض ولون كحلي (#0F2A4A)
+/// 4. خط فاصل (Divider)
+/// 5. العمولة (ذهبي) والباقي (كحلي - يعرض نفس رقم صافي التسوية النهائي في الإعدادات).
 class FooterSummary extends StatelessWidget {
-  const FooterSummary({super.key, required this.summary});
+  const FooterSummary({
+    super.key,
+    required this.summary,
+    required this.netSettlement,
+  });
 
   final MonthSummary summary;
+
+  /// صافي التسوية النهائي المطابق تماماً لصفحة الإعدادات والتسوية.
+  final double netSettlement;
 
   @override
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(AppColors.radius)),
+        borderRadius: const BorderRadius.vertical(
+          top: Radius.circular(AppColors.radius),
+        ),
         boxShadow: [
           BoxShadow(
             color: AppColors.primary.withValues(alpha: 0.08),
@@ -27,14 +41,21 @@ class FooterSummary extends StatelessWidget {
       child: SafeArea(
         top: false,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               _line('إجمالي الصيانة المدفوع', summary.collected, AppColors.green),
               const SizedBox(height: 4),
               _line('المتبقي غير المدفوع', summary.uncollected, AppColors.orange),
-              const Divider(height: 18),
+              const SizedBox(height: 4),
+              _line(
+                'إجمالي الصيانات',
+                summary.total,
+                AppColors.primary,
+                boldLabel: true,
+              ),
+              const Divider(height: 16),
               Row(
                 children: [
                   Expanded(
@@ -50,7 +71,7 @@ class FooterSummary extends StatelessWidget {
                   Expanded(
                     child: _box(
                       title: 'الباقي',
-                      value: summary.remainder,
+                      value: netSettlement,
                       background: AppColors.primary,
                       foreground: Colors.white,
                       icon: Icons.account_balance_rounded,
@@ -65,7 +86,12 @@ class FooterSummary extends StatelessWidget {
     );
   }
 
-  Widget _line(String label, double value, Color color) {
+  Widget _line(
+    String label,
+    double value,
+    Color color, {
+    bool boldLabel = false,
+  }) {
     return Row(
       children: [
         Container(
@@ -77,16 +103,20 @@ class FooterSummary extends StatelessWidget {
         Expanded(
           child: Text(
             label,
-            style: const TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: AppColors.secondary,
+            style: TextStyle(
+              fontSize: 13.5,
+              fontWeight: boldLabel ? FontWeight.w800 : FontWeight.w600,
+              color: boldLabel ? AppColors.primary : AppColors.secondary,
             ),
           ),
         ),
         Text(
           formatMoney(value),
-          style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: color),
+          style: TextStyle(
+            fontSize: boldLabel ? 15.5 : 14.5,
+            fontWeight: FontWeight.w800,
+            color: color,
+          ),
         ),
       ],
     );
@@ -115,14 +145,22 @@ class FooterSummary extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: foreground),
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: foreground,
+                  ),
                 ),
                 FittedBox(
                   fit: BoxFit.scaleDown,
                   alignment: AlignmentDirectional.centerStart,
                   child: Text(
                     formatMoney(value),
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: foreground),
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w800,
+                      color: foreground,
+                    ),
                   ),
                 ),
               ],

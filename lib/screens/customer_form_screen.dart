@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../models/enums.dart';
@@ -5,11 +6,16 @@ import '../models/maintenance_entry.dart';
 import '../services/app_controller.dart';
 import '../theme/app_colors.dart';
 import '../utils/formatters.dart';
+import '../widgets/area_picker_sheet.dart';
 import '../widgets/common.dart';
 
 /// شاشة إضافة / تعديل عميل.
 class CustomerFormScreen extends StatefulWidget {
-  const CustomerFormScreen({super.key, required this.controller, this.existing});
+  const CustomerFormScreen({
+    super.key,
+    required this.controller,
+    this.existing,
+  });
 
   final AppController controller;
   final CustomerEntry? existing;
@@ -20,6 +26,7 @@ class CustomerFormScreen extends StatefulWidget {
 
 class _CustomerFormScreenState extends State<CustomerFormScreen> {
   final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _clientNumber;
   late final TextEditingController _name;
   late final TextEditingController _area;
   late final TextEditingController _amount;
@@ -34,16 +41,33 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
   void initState() {
     super.initState();
     final existing = widget.existing;
+    _clientNumber = TextEditingController(
+      text: existing != null ? existing.customer.clientNumber.toString() : '',
+    );
     _name = TextEditingController(text: existing?.customer.name ?? '');
     _area = TextEditingController(text: existing?.customer.area ?? '');
-    _amount = TextEditingController(text: amountToInput(existing?.entry.amount ?? 0));
+    _amount = TextEditingController(
+      text: amountToInput(existing?.entry.amount ?? 0),
+    );
     _status = existing?.entry.status ?? PaymentStatus.unpaid;
     _method = existing?.entry.paymentMethod ?? PaymentMethod.cash;
     _isAdvance = existing?.entry.isAdvance ?? false;
+
+    if (existing == null) {
+      _loadNextClientNumber();
+    }
+  }
+
+  Future<void> _loadNextClientNumber() async {
+    final nextNum = await widget.controller.getNextClientNumber();
+    if (mounted && _clientNumber.text.trim().isEmpty) {
+      setState(() => _clientNumber.text = nextNum.toString());
+    }
   }
 
   @override
   void dispose() {
+    _clientNumber.dispose();
     _name.dispose();
     _area.dispose();
     _amount.dispose();
@@ -56,8 +80,10 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
     try {
+      final parsedNumber = parseAmount(_clientNumber.text).toInt();
       await widget.controller.saveCustomerEntry(
         existing: widget.existing,
+        clientNumber: parsedNumber <= 0 ? 1 : parsedNumber,
         name: _name.text.trim(),
         area: _area.text.trim(),
         amount: parseAmount(_amount.text),
@@ -87,7 +113,7 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
       context,
       title: 'حذف العميل',
       message:
-          'هل أنت متأكد من حذف العميل «${existing.customer.name}»؟\n'
+          'هل أنت متأكد من حذف العميل «${existing.customer.name}» (#${existing.customer.clientNumber})؟\n'
           'سيتم حذفه من هذا الشهر والشهور القادمة مع الإبقاء على سجل الشهور السابقة.',
       confirmLabel: 'حذف',
       confirmColor: AppColors.orange,
@@ -100,7 +126,10 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
     await widget.controller.deleteCustomer(existing);
     navigator.pop();
     messenger.showSnackBar(
-      const SnackBar(content: Text('تم حذف العميل'), backgroundColor: AppColors.orange),
+      const SnackBar(
+        content: Text('تم حذف العميل'),
+        backgroundColor: AppColors.orange,
+      ),
     );
   }
 
@@ -108,7 +137,9 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
   Widget build(BuildContext context) {
     final month = widget.controller.month;
     return Scaffold(
-      appBar: AppBar(title: Text(_isEditing ? 'تعديل بيانات العميل' : 'إضافة عميل جديد')),
+      appBar: AppBar(
+        title: Text(_isEditing ? 'تعديل بيانات العميل' : 'إضافة عميل جديد'),
+      ),
       body: Form(
         key: _formKey,
         child: ListView(
@@ -118,27 +149,54 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
               title: 'بيانات العميل',
               icon: Icons.storefront_rounded,
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  TextFormField(
-                    controller: _name,
-                    textInputAction: TextInputAction.next,
-                    decoration: const InputDecoration(
-                      labelText: 'اسم العميل',
-                      hintText: 'مثال: وان اليفن',
-                      prefixIcon: Icon(Icons.person_outline_rounded),
-                    ),
-                    validator: (v) =>
-                        (v ?? '').trim().isEmpty ? 'يرجى إدخال اسم العميل' : null,
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        width: 115,
+                        child: TextFormField(
+                          controller: _clientNumber,
+                          keyboardType: TextInputType.number,
+                          textInputAction: TextInputAction.next,
+                          inputFormatters: [
+                            FilteringTextInputFormatter.allow(
+                              RegExp(r'[0-9٠-٩]'),
+                            ),
+                          ],
+                          decoration: const InputDecoration(
+                            labelText: 'الرقم الأصلي',
+                            hintText: '1',
+                            prefixText: '#',
+                          ),
+                          validator: (v) => parseAmount(v ?? '').toInt() <= 0
+                              ? 'أدخل الرقم'
+                              : null,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: TextFormField(
+                          controller: _name,
+                          textInputAction: TextInputAction.next,
+                          decoration: const InputDecoration(
+                            labelText: 'اسم العميل',
+                            hintText: 'مثال: وان اليفن',
+                            prefixIcon: Icon(Icons.person_outline_rounded),
+                          ),
+                          validator: (v) => (v ?? '').trim().isEmpty
+                              ? 'يرجى إدخال اسم العميل'
+                              : null,
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 12),
-                  TextFormField(
+                  // خانة المنطقة مع فلترة الحرف الأول + الزر البرتقالي للمناطق المحفوظة
+                  AreaAutocompleteField(
                     controller: _area,
-                    textInputAction: TextInputAction.next,
-                    decoration: const InputDecoration(
-                      labelText: 'المنطقة / المكان',
-                      hintText: 'مثال: مدينة نصر',
-                      prefixIcon: Icon(Icons.location_on_outlined),
-                    ),
+                    appController: widget.controller,
                   ),
                   const SizedBox(height: 12),
                   NumberField(
@@ -146,8 +204,9 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
                     label: 'قيمة الصيانة',
                     hint: 'مثال: 500',
                     icon: Icons.payments_outlined,
-                    validator: (v) =>
-                        parseAmount(v ?? '') <= 0 ? 'يرجى إدخال قيمة صيانة صحيحة' : null,
+                    validator: (v) => parseAmount(v ?? '') <= 0
+                        ? 'يرجى إدخال قيمة صيانة صحيحة'
+                        : null,
                   ),
                 ],
               ),
@@ -180,7 +239,8 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
                       ),
                     ],
                     selected: {_status},
-                    onSelectionChanged: (s) => setState(() => _status = s.first),
+                    onSelectionChanged: (s) =>
+                        setState(() => _status = s.first),
                   ),
                   const SizedBox(height: 14),
                   const FieldLabel('طريقة الدفع'),
@@ -199,7 +259,8 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
                       ),
                     ],
                     selected: {_method},
-                    onSelectionChanged: (s) => setState(() => _method = s.first),
+                    onSelectionChanged: (s) =>
+                        setState(() => _method = s.first),
                   ),
                   const SizedBox(height: 14),
                   const FieldLabel('شهر الاستحقاق'),
@@ -232,7 +293,10 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
                       ),
                       child: Row(
                         children: [
-                          const Icon(Icons.fast_forward_rounded, color: AppColors.primary),
+                          const Icon(
+                            Icons.fast_forward_rounded,
+                            color: AppColors.primary,
+                          ),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(

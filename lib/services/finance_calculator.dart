@@ -33,13 +33,14 @@ class MonthSummary {
   final int unpaidCount;
   final int holdCount;
 
+  /// إجمالي الصيانات (المحصّل + غير المحصّل).
   double get total => collected + uncollected;
 
   /// الباقي بعد خصم العمولة من المحصّل.
   double get remainder => collected - commission;
 }
 
-/// تفاصيل تسوية الحساب الشهري.
+/// تفاصيل التقفيل وتسوية الحساب الشهري.
 class SettlementBreakdown {
   const SettlementBreakdown({
     required this.totalMaintenance,
@@ -51,20 +52,33 @@ class SettlementBreakdown {
     required this.payment,
   });
 
+  /// صيانات المهندس المحصّلة.
   final double totalMaintenance;
   final double commission;
   final double walletTransfers;
   final double baseSalary;
   final double fixedDues;
+
+  /// قديم / الرصيد المرحل.
   final double carriedIn;
+
+  /// سداد.
   final double payment;
 
+  /// إجمالي الراتب والمستحقات الثابتة.
   double get salaryAndDues => baseSalary + fixedDues;
 
-  /// صافي المتبقي النهائي =
-  /// إجمالي الصيانات - العمولة - التحويلات عبر المحفظة - الراتب والمستحقات + الباقي عليّ - السداد
-  double get net =>
-      totalMaintenance - commission - walletTransfers - salaryAndDues + carriedIn - payment;
+  /// عليك (صيانات المهندس - العمولة - تحويلات المحفظة).
+  double get dueBeforeDues => totalMaintenance - commission - walletTransfers;
+
+  /// عليك بعد المستحقات (عليك - الراتب والمستحقات الثابتة).
+  double get dueAfterDues => dueBeforeDues - salaryAndDues;
+
+  /// متبقي عليك قبل السداد (عليك بعد المستحقات + قديم / الرصيد المرحل).
+  double get totalDueBeforePayment => dueAfterDues + carriedIn;
+
+  /// متبقي عليك النهائي (صافي المتبقي النهائي).
+  double get net => totalDueBeforePayment - payment;
 }
 
 abstract final class FinanceCalculator {

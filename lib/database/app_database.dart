@@ -8,6 +8,9 @@ abstract final class DbTables {
   static const String settings = 'engineer_settings';
   static const String settlements = 'settlements';
 
+  /// جدول المناطق المحفوظة محلياً.
+  static const String areas = 'saved_areas';
+
   /// جدول محلي فقط لحفظ بيانات المزامنة (آخر رفع/سحب).
   static const String meta = 'sync_meta';
 
@@ -25,7 +28,7 @@ class AppDatabase {
   static final AppDatabase instance = AppDatabase._();
 
   static const String _fileName = 'maintenance_tracker.db';
-  static const int _version = 1;
+  static const int _version = 2;
 
   Database? _database;
 
@@ -37,6 +40,7 @@ class AppDatabase {
       p.join(dir, _fileName),
       version: _version,
       onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
     );
   }
 
@@ -47,6 +51,7 @@ class AppDatabase {
       CREATE TABLE ${DbTables.customers} (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
+        client_number INTEGER NOT NULL DEFAULT 1,
         name TEXT NOT NULL,
         area TEXT NOT NULL DEFAULT '',
         amount REAL NOT NULL DEFAULT 0,
@@ -112,6 +117,15 @@ class AppDatabase {
     ''');
 
     batch.execute('''
+      CREATE TABLE ${DbTables.areas} (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    ''');
+
+    batch.execute('''
       CREATE TABLE ${DbTables.meta} (
         user_id TEXT NOT NULL,
         key TEXT NOT NULL,
@@ -129,7 +143,47 @@ class AppDatabase {
     batch.execute(
       'CREATE INDEX idx_settlements_user_month ON ${DbTables.settlements}(user_id, month)',
     );
+    batch.execute(
+      'CREATE INDEX idx_areas_user ON ${DbTables.areas}(user_id)',
+    );
 
     await batch.commit(noResult: true);
+  }
+
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      try {
+        await db.execute(
+          'ALTER TABLE ${DbTables.customers} ADD COLUMN client_number INTEGER NOT NULL DEFAULT 1',
+        );
+      } catch (_) {}
+
+      // ترقيم العملاء الحاليين تسلسلياً حسب تاريخ الإضافة
+      final rows = await db.query(
+        DbTables.customers,
+        columns: ['id'],
+        orderBy: 'created_at ASC',
+      );
+      for (var i = 0; i < rows.length; i++) {
+        await db.update(
+          DbTables.customers,
+          {'client_number': i + 1},
+          where: 'id = ?',
+          whereArgs: [rows[i]['id']],
+        );
+      }
+
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS ${DbTables.areas} (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        )
+      ''');
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_areas_user ON ${DbTables.areas}(user_id)',
+      );
+    }
   }
 }

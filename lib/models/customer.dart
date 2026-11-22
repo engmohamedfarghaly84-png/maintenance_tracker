@@ -7,6 +7,7 @@ class Customer {
   const Customer({
     required this.id,
     required this.userId,
+    required this.clientNumber,
     required this.name,
     required this.area,
     required this.amount,
@@ -19,6 +20,9 @@ class Customer {
 
   final String id;
   final String userId;
+
+  /// الرقم الأصلي (التسلسلي) للعميل (مثل 1 -> #1).
+  final int clientNumber;
   final String name;
   final String area;
 
@@ -35,6 +39,7 @@ class Customer {
   MonthKey get startMonthKey => MonthKey.parse(startMonth);
 
   Customer copyWith({
+    int? clientNumber,
     String? name,
     String? area,
     double? amount,
@@ -45,6 +50,7 @@ class Customer {
     return Customer(
       id: id,
       userId: userId,
+      clientNumber: clientNumber ?? this.clientNumber,
       name: name ?? this.name,
       area: area ?? this.area,
       amount: amount ?? this.amount,
@@ -59,6 +65,7 @@ class Customer {
   Map<String, Object?> toDb() => {
         'id': id,
         'user_id': userId,
+        'client_number': clientNumber,
         'name': name,
         'area': area,
         'amount': amount,
@@ -72,6 +79,7 @@ class Customer {
   factory Customer.fromDb(Map<String, Object?> map) => Customer(
         id: map['id'] as String,
         userId: map['user_id'] as String,
+        clientNumber: parseInt(map['client_number'], fallback: 1),
         name: (map['name'] as String?) ?? '',
         area: (map['area'] as String?) ?? '',
         amount: parseDouble(map['amount']),

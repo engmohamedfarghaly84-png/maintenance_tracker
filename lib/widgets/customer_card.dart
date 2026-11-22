@@ -1,21 +1,36 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../models/enums.dart';
 import '../models/maintenance_entry.dart';
 import '../theme/app_colors.dart';
 import '../utils/formatters.dart';
 import 'app_badge.dart';
 
-/// بطاقة عميل في قائمة المتابعة.
+/// بطاقة عميل في قائمة المتابعة:
+/// - تعرض الرقم الأصلي كشارة رقمية واضحة بجانب اسم العميل (مثل #1).
+/// - نظيفة بدون أي أزرار أو أيقونات واتساب.
+/// - تحتوي على أزرار تحصيل سريع بضغطة واحدة (كاش / محفظة) فقط.
 class CustomerCard extends StatelessWidget {
-  const CustomerCard({super.key, required this.item, required this.onTap});
+  const CustomerCard({
+    super.key,
+    required this.item,
+    required this.onTap,
+    required this.onQuickCollect,
+  });
 
   final CustomerEntry item;
   final VoidCallback onTap;
+  final ValueChanged<PaymentMethod> onQuickCollect;
 
   @override
   Widget build(BuildContext context) {
     final entry = item.entry;
     final customer = item.customer;
+    final isPaidCash = entry.status == PaymentStatus.paid &&
+        entry.paymentMethod == PaymentMethod.cash;
+    final isPaidWallet = entry.status == PaymentStatus.paid &&
+        entry.paymentMethod == PaymentMethod.wallet;
+
     return Card(
       clipBehavior: Clip.antiAlias,
       shape: RoundedRectangleBorder(
@@ -35,10 +50,23 @@ class CustomerCard extends StatelessWidget {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  CircleAvatar(
-                    radius: 20,
-                    backgroundColor: AppColors.primary.withValues(alpha: 0.08),
-                    child: const Icon(Icons.storefront_rounded, color: AppColors.primary, size: 22),
+                  // شارة الرقم الأصلي للعميل (#1)
+                  Container(
+                    constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: AppColors.primary,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      '#${customer.clientNumber}',
+                      style: const TextStyle(
+                        color: AppColors.gold,
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
@@ -56,12 +84,19 @@ class CustomerCard extends StatelessWidget {
                         const SizedBox(height: 2),
                         Row(
                           children: [
-                            const Icon(Icons.location_on_outlined, size: 15, color: AppColors.secondary),
-                            const SizedBox(width: 2),
+                            const Icon(
+                              Icons.location_on_outlined,
+                              size: 14,
+                              color: AppColors.secondary,
+                            ),
+                            const SizedBox(width: 3),
                             Expanded(
                               child: Text(
                                 customer.area.isEmpty ? 'بدون منطقة' : customer.area,
-                                style: const TextStyle(fontSize: 13, color: AppColors.secondary),
+                                style: const TextStyle(
+                                  fontSize: 12.5,
+                                  color: AppColors.secondary,
+                                ),
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
@@ -91,14 +126,91 @@ class CustomerCard extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 10),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
+              Row(
                 children: [
-                  AppBadge.status(entry.status),
-                  AppBadge.method(entry.paymentMethod),
-                  if (entry.isAdvance) AppBadge.advance(),
+                  Expanded(
+                    child: Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        AppBadge.status(entry.status),
+                        AppBadge.method(entry.paymentMethod),
+                        if (entry.isAdvance) AppBadge.advance(),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  // أزرار التحصيل السريع بضغطة واحدة (كاش / محفظة)
+                  _QuickCollectButton(
+                    label: 'كاش',
+                    icon: Icons.payments_outlined,
+                    active: isPaidCash,
+                    onTap: () => onQuickCollect(PaymentMethod.cash),
+                  ),
+                  const SizedBox(width: 6),
+                  _QuickCollectButton(
+                    label: 'محفظة',
+                    icon: Icons.account_balance_wallet_outlined,
+                    active: isPaidWallet,
+                    onTap: () => onQuickCollect(PaymentMethod.wallet),
+                  ),
                 ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _QuickCollectButton extends StatelessWidget {
+  const _QuickCollectButton({
+    required this.label,
+    required this.icon,
+    required this.active,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final bg = active ? AppColors.green : AppColors.background;
+    final fg = active ? Colors.white : AppColors.primary;
+    final border = active ? AppColors.green : AppColors.border;
+
+    return Material(
+      color: bg,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: border),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                active ? Icons.check_circle_rounded : icon,
+                size: 14,
+                color: fg,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: fg,
+                ),
               ),
             ],
           ),

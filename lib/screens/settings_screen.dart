@@ -10,6 +10,7 @@ import '../services/finance_calculator.dart';
 import '../services/sync_service.dart';
 import '../theme/app_colors.dart';
 import '../utils/formatters.dart';
+import '../widgets/area_picker_sheet.dart';
 import '../widgets/common.dart';
 import 'cloud_auth_screen.dart';
 
@@ -32,9 +33,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _insurance;
   late final TextEditingController _carried;
   late final TextEditingController _payment;
+  late final TextEditingController _areaInput;
   late final TextEditingController _newPin;
   late CommissionBasis _basis;
   Timer? _autoSaveTimer;
+  Timer? _paymentSaveTimer;
   bool _busy = false;
   bool _obscurePin = true;
 
@@ -54,6 +57,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _payment = TextEditingController(
       text: amountToInput(_c.settlement?.payment ?? 0),
     );
+    _areaInput = TextEditingController();
     _newPin = TextEditingController();
     _basis = s.commissionBasis;
   }
@@ -61,6 +65,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void dispose() {
     _autoSaveTimer?.cancel();
+    _paymentSaveTimer?.cancel();
     for (final c in [
       _name,
       _salary,
@@ -70,6 +75,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _insurance,
       _carried,
       _payment,
+      _areaInput,
       _newPin,
     ]) {
       c.dispose();
@@ -92,8 +98,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _onSettingsChanged() {
     setState(() {});
     _autoSaveTimer?.cancel();
-    _autoSaveTimer = Timer(const Duration(milliseconds: 300), () {
+    _autoSaveTimer = Timer(const Duration(milliseconds: 250), () {
       unawaited(_c.saveSettings(_draftSettings()));
+    });
+  }
+
+  /// حفظ مبلغ السداد فوراً ليتطابق رقم «الباقي» في الشريط السفلي للشاشة الرئيسية.
+  void _onPaymentChanged() {
+    setState(() {});
+    _paymentSaveTimer?.cancel();
+    _paymentSaveTimer = Timer(const Duration(milliseconds: 250), () {
+      unawaited(_c.updateMonthlyPayment(parseAmount(_payment.text)));
     });
   }
 
@@ -112,13 +127,63 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _saveSettings({bool silent = false}) async {
     _autoSaveTimer?.cancel();
+    _paymentSaveTimer?.cancel();
     await _c.saveSettings(_draftSettings());
+    await _c.updateMonthlyPayment(parseAmount(_payment.text));
     if (!silent && mounted) {
       showAppSnack(
         context,
         'تم حفظ إعدادات المهندس محلياً بنجاح',
         color: AppColors.green,
       );
+    }
+  }
+
+  Future<void> _addArea() async {
+    final name = _areaInput.text.trim();
+    if (name.isEmpty) {
+      showAppSnack(
+        context,
+        'يرجى كتابة اسم المنطقة أولاً',
+        color: AppColors.orange,
+      );
+      return;
+    }
+    await _c.addSavedArea(name);
+    _areaInput.clear();
+    if (mounted) {
+      showAppSnack(
+        context,
+        'تم حفظ المنطقة «$name» بنجاح',
+        color: AppColors.green,
+      );
+    }
+  }
+
+  Future<void> _resetMonthAccounts() async {
+    final confirmed = await showConfirmDialog(
+      context,
+      title: 'تصفير حسابات العملاء (بداية شهر جديد)',
+      message:
+          'سيتم تحويل حالة الدفع لجميع العملاء في (${_c.month.label}) إلى «لم يدفع» وتصفير مبلغ السداد النقدي للشهر، مع الإبقاء على أسماء العملاء وأرقامهم الأصلية ومناطقهم وقيم صيانتهم كما هي.\n\nهل تريد المتابعة؟',
+      confirmLabel: 'تصفير الحسابات',
+      confirmColor: AppColors.orange,
+    );
+    if (!confirmed || !mounted) return;
+
+    setState(() => _busy = true);
+    try {
+      await _c.resetMonthAccounts();
+      _payment.clear();
+      if (mounted) {
+        showAppSnack(
+          context,
+          'تم تصفير حسابات العملاء لبداية شهر جديد بنجاح',
+          color: AppColors.green,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -400,7 +465,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
             children: [
               _buildEngineerSection(),
               const SizedBox(height: 14),
+              _buildAreasSection(),
+              const SizedBox(height: 14),
               _buildSettlementSection(breakdown),
+              const SizedBox(height: 14),
+              _buildResetMonthSection(),
               const SizedBox(height: 14),
               _buildBackupSection(),
               const SizedBox(height: 14),
@@ -522,7 +591,86 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   // ---------------------------------------------------------------------------
-  // 2. تسوية الحساب الشهري
+  // 2. قاعدة بيانات المناطق المحفوظة + فلترة الحرف الأول + الزر البرتقالي
+  // ---------------------------------------------------------------------------
+  Widget _buildAreasSection() {
+    final areas = _c.savedAreas;
+    final counts = _c.areaCustomerCounts;
+    return SectionCard(
+      title: 'المناطق المحفوظة (${areas.length})',
+      icon: Icons.place_rounded,
+      iconColor: AppColors.orange,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          AreaAutocompleteField(
+            controller: _areaInput,
+            appController: _c,
+            labelText: 'المنطقة (إضافة أو بحث بالحرف الأول أ/إ/ا)',
+            hintText: 'اكتب اسم المنطقة أو اختر من الزر البرتقالي',
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: _busy ? null : _addArea,
+                  icon: const Icon(Icons.add_location_alt_rounded),
+                  label: const Text('حفظ المنطقة'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.orange,
+                  side: const BorderSide(color: AppColors.orange),
+                ),
+                onPressed: () => showAreaPickerSheet(
+                  context: context,
+                  controller: _c,
+                  allowDelete: true,
+                  onSelectArea: (picked) {
+                    if (picked != null) {
+                      setState(() => _areaInput.text = picked);
+                    }
+                  },
+                ),
+                icon: const Icon(Icons.list_alt_rounded),
+                label: const Text('إدارة القائمة'),
+              ),
+            ],
+          ),
+          if (areas.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final area in areas)
+                  InputChip(
+                    backgroundColor: AppColors.background,
+                    label: Text(
+                      '${area.name} (${counts[area.name] ?? 0})',
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                    onPressed: () => setState(() => _areaInput.text = area.name),
+                    deleteIconColor: AppColors.orange,
+                    onDeleted: () => _c.deleteSavedArea(area.id),
+                  ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // 3. تسوية الحساب الشهري
   // ---------------------------------------------------------------------------
   Widget _buildSettlementSection(SettlementBreakdown b) {
     final approved = _c.settlement?.approved ?? false;
@@ -533,17 +681,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _calcRow('إجمالي الصيانات المحصّلة', b.totalMaintenance, sign: '+'),
+          _calcRow('صيانات المهندس المحصّلة', b.totalMaintenance, sign: '+'),
           _calcRow('العمولة', b.commission, sign: '-', color: AppColors.gold),
-          _calcRow('التحويلات عبر المحفظة', b.walletTransfers, sign: '-'),
+          if (b.walletTransfers > 0)
+            _calcRow('التحويلات عبر المحفظة', b.walletTransfers, sign: '-'),
+          _calcRow('عليك', b.dueBeforeDues, sign: '='),
           _calcRow('الراتب والمستحقات الثابتة', b.salaryAndDues, sign: '-'),
-          _calcRow('الباقي عليّ (مرحّل)', b.carriedIn, sign: '+'),
+          _calcRow('عليك بعد المستحقات', b.dueAfterDues, sign: '='),
+          _calcRow('قديم / الرصيد المرحل', b.carriedIn, sign: '+'),
+          _calcRow(
+            'متبقي عليك قبل السداد',
+            b.totalDueBeforePayment,
+            sign: '=',
+            color: AppColors.orange,
+          ),
           const Divider(height: 22),
           NumberField(
             controller: _payment,
             label: 'السداد',
             icon: Icons.paid_outlined,
-            onChanged: (_) => setState(() {}),
+            onChanged: (_) => _onPaymentChanged(),
           ),
           const SizedBox(height: 14),
           Container(
@@ -572,7 +729,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                       ),
                       Text(
-                        'يُرحّل للشهر القادم عند الاعتماد',
+                        'مطابق تماماً لبطاقة «الباقي» في الشاشة الرئيسية',
                         style: TextStyle(color: Colors.white70, fontSize: 11),
                       ),
                     ],
@@ -669,7 +826,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   // ---------------------------------------------------------------------------
-  // 3. الحفظ والنسخ الاحتياطي والتصدير
+  // 4. تصفير حسابات العملاء (بداية شهر جديد)
+  // ---------------------------------------------------------------------------
+  Widget _buildResetMonthSection() {
+    return SectionCard(
+      title: 'بداية شهر جديد',
+      icon: Icons.restart_alt_rounded,
+      iconColor: AppColors.orange,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'يقوم هذا الزر بتحويل حالة الدفع لجميع العملاء في الشهر المحدد إلى «لم يدفع» وتصفير مبلغ السداد النقدي للشهر، مع الإبقاء على أسماء العملاء وأرقامهم الأصلية ومناطقهم وقيم صيانتهم كما هي.',
+            style: TextStyle(fontSize: 12.5, color: AppColors.secondary),
+          ),
+          const SizedBox(height: 12),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.orange),
+            onPressed: _busy ? null : _resetMonthAccounts,
+            icon: const Icon(Icons.restart_alt_rounded),
+            label: const Text('تصفير حسابات العملاء (بداية شهر جديد)'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // 5. الحفظ والنسخ الاحتياطي والتصدير
   // ---------------------------------------------------------------------------
   Widget _buildBackupSection() {
     final lastUpload = _c.lastUpload;
@@ -734,7 +918,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   // ---------------------------------------------------------------------------
-  // 4. تغيير كلمة مرور التطبيق (PIN) محلياً
+  // 6. تغيير كلمة مرور التطبيق (PIN) محلياً
   // ---------------------------------------------------------------------------
   Widget _buildAppPinSection() {
     return SectionCard(
@@ -771,7 +955,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   // ---------------------------------------------------------------------------
-  // 5. الحساب السحابي والمزامنة (اختياري)
+  // 7. الحساب السحابي والمزامنة (اختياري)
   // ---------------------------------------------------------------------------
   Widget _buildOptionalCloudAccountSection() {
     final connected = _c.isCloudConnected;
