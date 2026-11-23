@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
@@ -462,7 +461,7 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<File> exportExcel() async {
+  Future<ExportedReport> exportExcel() async {
     final currentSettings = await repo.getSettings(_userId);
     _settings = currentSettings;
     final customers = await repo.getCustomers(_userId, includeDeleted: true);

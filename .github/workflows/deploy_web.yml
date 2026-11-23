@@ -1,0 +1,62 @@
+name: Build and Deploy Flutter Web PWA to GitHub Pages
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy-web:
+    name: Build & Deploy Web PWA
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter (Stable)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Ensure sqflite web worker & sqlite3.wasm are present
+        run: dart run sqflite_common_ffi_web:setup
+
+      - name: Verify code with flutter analyze
+        run: flutter analyze
+
+      - name: Build Flutter Web Release PWA
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          DART_DEFINES=""
+          if [ -n "$SUPABASE_URL" ]; then
+            DART_DEFINES="$DART_DEFINES --dart-define=SUPABASE_URL=$SUPABASE_URL"
+          fi
+          if [ -n "$SUPABASE_ANON_KEY" ]; then
+            DART_DEFINES="$DART_DEFINES --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY"
+          fi
+          flutter build web --release --base-href "/maintenance_tracker/" $DART_DEFINES
+          touch build/web/.nojekyll
+          cp build/web/index.html build/web/404.html
+
+      - name: Deploy to gh-pages branch (GitHub Pages)
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./build/web
+          force_orphan: true

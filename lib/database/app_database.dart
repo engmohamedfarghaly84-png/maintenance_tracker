@@ -1,6 +1,9 @@
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
+import 'db_factory_stub.dart'
+    if (dart.library.js_interop) 'db_factory_web.dart' as dbf;
+
 /// أسماء الجداول (متطابقة مع جداول Supabase).
 abstract final class DbTables {
   static const String customers = 'customers';
@@ -35,7 +38,8 @@ class AppDatabase {
   Future<Database> get database async => _database ??= await _open();
 
   Future<Database> _open() async {
-    final dir = await getDatabasesPath();
+    dbf.configureDatabaseFactory();
+    final dir = await dbf.resolveDatabasesPath();
     return openDatabase(
       p.join(dir, _fileName),
       version: _version,

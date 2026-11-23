@@ -1,14 +1,14 @@
-import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:excel/excel.dart' as xl;
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import '../models/engineer_settings.dart';
 import '../models/enums.dart';
 import '../models/maintenance_entry.dart';
 import '../models/month_key.dart';
 import '../utils/formatters.dart';
+import 'file_saver_stub.dart'
+    if (dart.library.io) 'file_saver_io.dart' as file_saver;
 import 'finance_calculator.dart';
 
 /// البيانات اللازمة لتوليد تقرير Excel الشهري الرسمي.
@@ -32,6 +32,16 @@ class ExcelReportData {
   final bool settlementApproved;
 }
 
+/// ملف التقرير الناتج: على Android/iOS يُحفظ على الجهاز ([path] موجود)،
+/// وعلى الويب يُرجع البيانات فقط ليتم تنزيلها/مشاركتها من المتصفح.
+class ExportedReport {
+  const ExportedReport({required this.fileName, required this.bytes, this.path});
+
+  final String fileName;
+  final Uint8List bytes;
+  final String? path;
+}
+
 /// توليد ملف Excel الرسمي منسق من اليمين لليسار.
 class ExcelExportService {
   static const String sheetSummary = 'الرئيسية والتسوية';
@@ -47,7 +57,7 @@ class ExcelExportService {
   static const String _white = '#FFFFFF';
   static const String _borderColor = '#DDE3EC';
 
-  Future<File> export(ExcelReportData data) async {
+  Future<ExportedReport> export(ExcelReportData data) async {
     final excel = xl.Excel.createExcel();
     final defaultSheet = excel.getDefaultSheet() ?? 'Sheet1';
     excel.rename(defaultSheet, sheetSummary);
@@ -64,32 +74,19 @@ class ExcelExportService {
     _buildOverdueSheet(overdueSheet, data);
     excel.setDefaultSheet(sheetSummary);
 
-    final bytes = excel.encode();
-    if (bytes == null) {
+    final encoded = excel.encode();
+    if (encoded == null) {
       throw Exception('تعذر إنشاء ملف Excel');
     }
+    final bytes = Uint8List.fromList(encoded);
 
-    final directory = await _reportsDirectory();
     final stamp = DateTime.now();
     final fileName = 'maintenance_${data.month.key}_'
         '${stamp.year}${_two(stamp.month)}${_two(stamp.day)}_'
         '${_two(stamp.hour)}${_two(stamp.minute)}${_two(stamp.second)}.xlsx';
-    final file = File(p.join(directory.path, fileName));
-    await file.writeAsBytes(bytes, flush: true);
-    return file;
-  }
 
-  Future<Directory> _reportsDirectory() async {
-    Directory? base;
-    if (Platform.isAndroid) {
-      base = await getExternalStorageDirectory();
-    }
-    base ??= await getApplicationDocumentsDirectory();
-    final directory = Directory(p.join(base.path, 'Reports'));
-    if (!directory.existsSync()) {
-      await directory.create(recursive: true);
-    }
-    return directory;
+    final savedPath = await file_saver.saveReportToDevice(fileName, bytes);
+    return ExportedReport(fileName: fileName, bytes: bytes, path: savedPath);
   }
 
   // ---------------------------------------------------------------------------

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="متابعة الصيانة - تطبيق متابعة عملاء وتحصيل الصيانة وتسوية حساب المهندس">
+  <meta name="theme-color" content="#0F2A4A">
+
+  <!-- iOS (Add to Home Screen) -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="متابعة الصيانة">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>متابعة الصيانة</title>
+  <link rel="manifest" href="manifest.json">
+
+  <style>
+    html, body { margin: 0; padding: 0; background: #F5F7FA; height: 100%; }
+    #splash {
+      position: fixed; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; background: #0F2A4A;
+      color: #F4B73C; font-family: sans-serif; z-index: 9999;
+    }
+    #splash .title { font-size: 26px; font-weight: 800; margin-top: 16px; }
+    #splash .sub { font-size: 14px; color: #fff; opacity: .8; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <div id="splash">
+    <img src="icons/Icon-192.png" width="96" height="96" style="border-radius:22px" alt="">
+    <div class="title">متابعة الصيانة</div>
+    <div class="sub">جاري التحميل...</div>
+  </div>
+  <script>
+    window.addEventListener('flutter-first-frame', function () {
+      var s = document.getElementById('splash');
+      if (s) s.remove();
+    });
+  </script>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

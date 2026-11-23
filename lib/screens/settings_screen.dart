@@ -280,7 +280,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _busy = true);
     try {
       await _saveSettings(silent: true);
-      final file = await _c.exportExcel();
+      final report = await _c.exportExcel();
       if (!mounted) return;
       await showModalBottomSheet<void>(
         context: context,
@@ -305,7 +305,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'تم حفظ ملف Excel على الجهاز بنجاح',
+                        'تم تجهيز ملف Excel بنجاح',
                         style: TextStyle(
                           fontSize: 17,
                           fontWeight: FontWeight.w800,
@@ -316,7 +316,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  file.path,
+                  report.path ?? report.fileName,
                   textDirection: TextDirection.ltr,
                   style: const TextStyle(
                     fontSize: 12,
@@ -330,15 +330,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   onPressed: () async {
                     Navigator.of(sheetCtx).pop();
+                    final xfile = report.path != null
+                        ? XFile(report.path!)
+                        : XFile.fromData(
+                            report.bytes,
+                            name: report.fileName,
+                            mimeType:
+                                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                          );
                     await SharePlus.instance.share(
                       ShareParams(
-                        files: [XFile(file.path)],
+                        files: [xfile],
+                        fileNameOverrides: [report.fileName],
                         text: 'تقرير الصيانة - ${_c.month.label}',
                       ),
                     );
                   },
                   icon: const Icon(Icons.share_rounded),
-                  label: const Text('مشاركة الملف (واتساب / تطبيقات أخرى)'),
+                  label: const Text(
+                    'تنزيل / مشاركة الملف (واتساب / حفظ في الملفات)',
+                  ),
                 ),
                 const SizedBox(height: 8),
                 OutlinedButton(
